@@ -1,0 +1,230 @@
+import pandas as pd
+import re
+#make a class for storing data and functions for GTF files
+
+class GTF_Parser: 
+    """
+    For gtf files
+    """
+
+    def __init__(self, file_name):
+        """
+        Initialize self.
+        And create a dataframe from the gtf file (self) data, with separate columns for gene ID and gene names. 
+        """
+        
+        self.df=pd.read_table(file_name, sep='\t', skiprows=1, header=None)
+        
+        #Give names to the columns and create two additional columns for Gene name and ID
+        self.df.columns=['seqname','source','feature','start','end','score','strand','frame','attribute']
+        self.df['Gene_ID']=""
+        self.df['Gene_name']=""
+        
+        self.attributes=self.df['attribute']
+        
+        #I will extract the name and ID of each gene from the 'attribute' column and add them to separate columns
+        
+        for index, value in self.attributes.items():
+            separate=value.split(";")                #the ID and name are spearated by ';' in the attribute column
+            
+            for feature in separate:
+                
+                if re.search(r"gene_name",feature):
+                    feat_name=feature.split('"')
+                    self.df['Gene_name'][index]=feat_name[1]
+                    
+                if re.search(r"gene_id",feature):
+                    feat_id=feature.split('"')
+                    self.df['Gene_ID'][index]=feat_id[1]
+                    
+        #If some entries have only ID and no name, then the 'Gene name' column is filled with the ID (and vice versa):
+                    
+        for index, value in self.df['Gene_ID'].items():
+            if value == '' :
+                self.df['Gene_ID'][index]=self.df['Gene_name'][index]
+                
+        for index, value in self.df['Gene_name'].items():
+            if value == '' :
+                self.df['Gene_name'][index]=self.df['Gene_ID'][index]
+                
+                
+
+    def printCoordinates(self, gene_name):
+        """
+        Takes a gene name as an argument.
+        For a protein coding gene:
+            ~if there are 3 features for the desired gene name, it finds and prints the start and end after joining the 3 features (They should be 2 UTRs and 1 CDS).
+            ~if there are 1, 2 or more than 3 features for the desired gene name, it finds and prints the start and end for each feature separately, indicating what kind of feature it is (should be either UTR or CDS)
+        For a non protein-coding gene:
+            it finds and prints start and end, indicating what kind of gene it is (e.g. sRNA, intergenic region)
+        If the gene name doesn't exist in 'Gene_name' column, it looks for it in the 'Gene_ID' column.
+        If the gene name doesn't exist neither in 'Gene_name' nor in 'Gene_ID' columns, it returns nothing.
+        """
+        
+        start_positions=[]
+        end_positions=[]
+        prot_indexes=[]
+        
+        for index, value in self.df['Gene_name'].items():
+            
+            #It will look for the gene name in the 'Gene name' and 'Gene ID' columns:
+            
+            if re.search(gene_name, value) or re.search(gene_name, self.df['Gene_ID'][index]):
+                
+                #If the gene is protein coding, I am saving the coordinates of all the features in lists, so that I can merge 
+                #later the untranslated regions with the coding sequence and return the coordinates of the total region:
+                
+                if self.df['source'][index]=='protein_coding':
+                    start_positions.append(self.df['start'][index])
+                    end_positions.append(self.df['end'][index])
+                    prot_indexes.append(index)
+                    
+                else:
+                    print (self.df['source'][index]+ " " +gene_name+ " starts at "+ str(self.df['start'][index]) +" and ends at "+str(self.df['end'][index]))
+        
+        starts=sorted(start_positions)
+        ends=sorted(end_positions)
+        
+        if len(starts) != 0:
+            
+            if len(starts) == 3:
+                start_point=starts[0]
+                end_point=ends[-1]
+                print ("Protein coding gene "+gene_name+" starts at "+str(start_point)+" and ends at "+str(end_point))
+                
+            #If the gene is protein coding, but for some reason has more (or less) features than 3 (5'UTR, CDS, 3'UTR),
+            #the coordinates of each separate feature will be printed:
+            
+            else:
+                print ("There are "+str(len(starts))+" protein coding features with name "+gene_name)
+                for i in prot_indexes:
+                    print ("Protein coding "+self.df['feature'][i]+" feature starts at "+self.df['start'][i]+" and ends at "+self.df['end'][i])
+        
+        
+    
+    def getCoordinates(self, gene_name): 
+        """
+            Takes a gene name as an argument.
+            -For a protein coding gene:
+                 it finds and prints the start and end after joining the 5UTR, CDS and 3UTR. 
+            -For a non protein-coding gene:
+                it finds and prints start and end (if there are multiple entries for the same name, it joins them all first)
+            """
+
+        #First, we create a dataframe containing only the rows related to our desired gene
+
+        condition1=self.df['Gene_name'].str.contains(gene_name)
+        general_df=self.df.loc[condition1]   
+
+        #Then, we create another dataframe containing only the 'protein coding' rows related to our desired gene
+                #If the gene is not protein coding, then this new dataframe is empty (has 0 rows)
+
+        condition2=self.df['source']=='protein_coding'
+        protcod_df=self.df.loc[condition1&condition2]    
+
+
+        #if the gene cannot be found (then both dataframes will have 0 rows):
+        if (protcod_df.shape[0] == 0) & (general_df.shape[0] == 0):
+
+            pass
+
+        #if the protcod dataframe is empty (number of rows=0_, which means that the gene is not protein coding):
+        elif protcod_df.shape[0] == 0:    
+
+            start_positions=[]
+            end_positions=[]
+            general_df.apply(lambda x: start_positions.append(x['start']), axis=1)
+            general_df.apply(lambda x: end_positions.append(x['end']), axis=1)
+                    #this is a bit redundant, as if we look for a tRNA or sRNA, our dataframe will probably have only 1 entry
+            return [start_positions[0], end_positions[-1]]
+
+        #if the gene is protein coding:
+        else:
+            start_positions=[]
+            end_positions=[]
+            protcod_df.apply(lambda x: start_positions.append(x['start']), axis=1)
+            protcod_df.apply(lambda x: end_positions.append(x['end']), axis=1)
+            starts=sorted(start_positions)
+            ends=sorted(end_positions)
+            start=starts[0]
+            end=ends[-1]
+
+            return [start_positions[0], end_positions[-1]]
+
+    ## Even if the code in the 'if' is basically the same both for coding and non-coding genes, the difference is that we use 
+    ## different dataframes, so that we get exclude any intergenic regions when we have a protein coding gene         
+
+    
+    
+    def getCDScoordinates(self, gene_name):
+        """
+        Takes a gene name as argument. 
+        It returns the start and end of the gene's coding sequence. 
+        If the gene name doesn't exist or it is not proteing coding gene, it does nothing.
+        """
+        
+        #First, we create a dataframe containing only the CDS row of our desired gene
+        #(if we give a protein coding gene name, the new_df will have 1 row, otherwise it will have 0)
+
+        condition=(self.df['Gene_name'].str.contains(gene_name)) & (self.df['feature']=='CDS')
+        new_df=self.df.loc[condition]   
+        
+        #The 'if' statement below is added in order not to take an error when we give a non-coding gene name 
+        
+        if new_df.shape[0] != 0:       #if the number of rows is not 0
+            
+            start=new_df.iloc[0].loc['start']     #.iloc[0]: 1st row   #.loc['start']: start column
+            end=new_df.iloc[0].loc['end']
+
+            return [start, end]
+    
+    
+    
+    def getCDSLength(self, gene_name):
+        """
+        Takes a gene name as an argument. 
+        Returns the length of its CDS sequence. 
+        If the gene name doesn't exist or it is not proteing coding gene, it returns nothing.
+        """
+        
+        #We create a dataframe containing only the CDS row of our desired gene. We do that only for not getting an error
+        #in case we give a noncoding gene
+        condition=(self.df['Gene_name'].str.contains(gene_name)) & (self.df['feature']=='CDS')
+        new_df=self.df.loc[condition] 
+        
+        if new_df.shape[0] !=0:          #if the number of rows is not 0, meaning if the gene is protein coding
+        
+            length=self.getCDScoordinates(gene_name)[1]-self.getCDScoordinates(gene_name)[0]
+        
+            return (length)
+    
+    
+    
+    def getCDSsequence(self, gene_name, genome_file):
+        """
+        Takes as arguments a gene name and the name of a file containing the genome in fasta format.
+        Returns the coding sequence (CDS) of the gene, extracted from the genome fasta file, based on its coordinates in the gtf.
+        """
+        
+        #Fisrt, we make a variable containing the full genome sequence:
+        
+        gnm_file=open(genome_file)
+        genome_seq=''
+        for line in gnm_file:
+            if line[0]!='>':
+                line=line.rstrip('\n')
+                genome_seq=genome_seq+line
+        
+        #Now we extract the gene CDS sequence from the full genome sequence, only if the gene is protein coding:
+        
+        condition=(self.df['Gene_name'].str.contains(gene_name)) & (self.df['feature']=='CDS')
+        new_df=self.df.loc[condition] 
+        
+        if new_df.shape[0] !=0:          #if the number of rows is not 0, meaning if the gene is protein coding
+        
+            start=self.getCDScoordinates(gene_name)[0]-1       #Python is 0-based
+            end=self.getCDScoordinates(gene_name)[1]           #the end is exclusive, so I won't subtract 1
+            sequence=genome_seq[start:end]
+            
+            return (sequence)
+        
